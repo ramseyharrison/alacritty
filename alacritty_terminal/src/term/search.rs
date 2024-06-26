@@ -530,67 +530,102 @@ impl<T> Term<T> {
         }
     }
 
-    pub fn star_search(&mut self, point: Point) -> Option<Point>{
-	let grid = self.grid();
-	let mut iter = grid.iter_from(point);
-		
-	if iter.cell().c.is_whitespace(){ //if search begins in space, find start of next word to the right
-	    loop {
-		let cell = iter.next();
-		match cell {
-		    Some(_c) => if !iter.cell().c.is_whitespace(){
-			break; //now iter will be at the beginning of a word
-		    },
-		    None => {
-			return None; //or it will find that there is no word to its right
-		    }
-		}
-	    }
-	}else if iter.point().column != 0 { //if we're in the middle of a word, move to its beginning
-	    loop {
-		let cell = iter.prev();
-		match cell {
-		    Some(_c) => if iter.cell().c.is_whitespace(){
-			iter.next();//we moved one space before its start, so we go forward
-			break;
-		    },
-		    None => {
-			iter.next();
-			break;
-		    }
-		}
-	    }
-	}
-	let mut search_string = String::from("");
-	search_string.push(iter.cell().c);
-	loop {
-	    let cell = iter.next();
-	    match cell {
-		Some(_c) =>
-		    if iter.cell().c.is_whitespace(){
-			break;
-		    }else {
-			search_string.push(iter.cell().c);
-		    },
-		None => {
-		    //something should be done here to have iter point to a real place
-		    //move iter to start of grid?
-		    break;
-		}
-	    }
-	}
-	let mut regex = RegexSearch::new(&search_string).unwrap();
-	let regex_match = self.search_next(&mut regex,iter.point(),
-						Direction::Right,
-						Direction::Left,
-					   None);
-	
-	match regex_match {
-	    Some(m) => {return Some(*(m.start()));},
-	    None => {return None;}
-	}
+    #[inline]
+    fn is_ignorable(&self, terms: &Vec<char>, ch: &char) -> bool {
+        return terms.iter().any(|x| x == ch);
+    }
 
+    pub fn star_search(&mut self, point: Point) -> Option<Point> {
+        let grid = self.grid();
+        let mut iter = grid.iter_from(point);
+        //should not include "_"
+        const SEMANTIC_ESCAPE_CHARS: &str = ",│`|:\"' ()[]{}<>\t@-$?.+"; //temporarily using my own, adding @ - $ ? . +
+        let terms: Vec<char> = SEMANTIC_ESCAPE_CHARS.chars().collect();
 
+        //if search begins in space, find start of next word to the right
+        //as of now, this search iterates until the end of the file. maybe it should stop at the end of a line
+        if self.is_ignorable(&terms, &iter.cell().c) {
+            loop {
+                let cell = iter.next();
+                match cell {
+                    Some(_c) => {
+                        if !self.is_ignorable(&terms, &iter.cell().c) {
+                            break; //now iter will be at the beginning of a word
+                        }
+                    },
+                    None => {
+                        return None; //or it will find that there is no word to its right
+                    },
+                }
+            }
+        } else if iter.point().column != 0 {
+            //if we're in the middle of a word, move to its beginning
+            loop {
+                let cell = iter.prev();
+                match cell {
+                    Some(_c) => {
+                        if self.is_ignorable(&terms, &iter.cell().c) {
+                            iter.next(); //we moved one space before its start, so we go forward
+                            break;
+                        }
+                    },
+                    None => {
+                        iter.next();
+                        break;
+                    },
+                }
+            }
+        }
+        //iter should now point to the beginning of our search keyword
+        //we iterate until we have stored all its characters in search_string
+        let mut search_string = String::from("");
+        search_string.push(iter.cell().c);
+        loop {
+            let it = iter.next();
+            match it {
+                Some(cell) => {
+                    if self.is_ignorable(&terms, &cell.cell.c) {
+                        break;
+                    } else {
+                        search_string.push(cell.cell.c);
+                    }
+                },
+                None => {
+                    //something should be done here to have iter point to a real place
+                    //move iter to start of grid?
+                    break;
+                },
+            }
+        }
+        let mut regex = RegexSearch::new(&search_string).unwrap();
+        loop {
+            let regex_match =
+                self.search_next(&mut regex, iter.point(), Direction::Right, Direction::Left, None);
+            match regex_match {
+                Some(m) => {
+                    let point = *(m.start());
+                    if point.column == 0 {
+                        iter = grid.iter_from(*(m.start()));
+                        iter.nth(search_string.len() - 1); //move to the end of the match and make sure there are only ignorables
+                        if self.is_ignorable(&terms, &iter.cell().c) {
+                            return Some(*(m.start()));
+                        }
+                    } else {
+                        iter = grid.iter_from(*(m.start()));
+                        let prev_c = iter.prev().unwrap().cell.c;
+                        if self.is_ignorable(&terms, &prev_c) {
+                            return Some(*(m.start()));
+                        } else {
+                            iter.next(); //to get back to start of match
+                            iter.next(); //to move past it, so as to find another match in the next iteration
+                        }
+                    }
+                },
+                None => {
+                    return None;
+                },
+            }
+        }
     }
     /// Searching to the left, find the next character contained in `needles`.
     pub fn inline_search_left(&self, mut point: Point, needles: &str) -> Result<Point, Point> {
